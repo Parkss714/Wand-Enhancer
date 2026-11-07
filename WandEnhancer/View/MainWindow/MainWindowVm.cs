@@ -1,9 +1,11 @@
 ﻿using System;
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
 using WandEnhancer.Core;
+using WandEnhancer.Core.Patching.Shared;
 using WandEnhancer.Core.Services;
 using WandEnhancer.Models;
 using WandEnhancer.ReactiveUICore;
@@ -33,6 +35,9 @@ namespace WandEnhancer.View.MainWindow
             WeModInfo = config;
             if (config == null)
             {
+                AlreadyPatched = false;
+                CanRestore = false;
+                IsPatchEnabled = false;
                 return;
             }
 
@@ -43,6 +48,28 @@ namespace WandEnhancer.View.MainWindow
 
             Log(LocalizationManager.Get(AlreadyPatched ? "log_already_patched" : "log_ready"),
                 AlreadyPatched ? ELogType.Warn : ELogType.Info);
+
+            // The root, not the app-* folder: Squirrel keeps the previous version folder, which would pin the old version after an update.
+            string squirrelRoot = LauncherDeployment.SquirrelRootOf(config);
+            var settings = SettingsManager.LoadSettings() ?? new AppSettings();
+            if (settings.LastInstallPath != squirrelRoot)
+            {
+                settings.LastInstallPath = squirrelRoot;
+                SettingsManager.SaveSettings(settings);
+            }
+
+            try
+            {
+                var newer = WeModInstalls.FindNewerInstall(squirrelRoot, config);
+                if (newer != null)
+                {
+                    Log(LocalizationManager.Format("log_newer_version",
+                        Path.GetFileName(newer.RootDirectory), newer.RootDirectory), ELogType.Warn);
+                }
+            }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException || e is ArgumentException)
+            {
+            }
         }
 
         private bool _isPatchEnabled;
@@ -93,25 +120,60 @@ namespace WandEnhancer.View.MainWindow
         public RelayCommand OpenSettingsCommand { get; }
         public RelayCommand CopyLogsCommand { get; }
         public RelayCommand ExportLogsCommand { get; }
+        public RelayCommand CopyDiagnosticsCommand { get; }
+        public RelayCommand RescanInstallCommand { get; }
 
-        private void OnFolderPathSelection(object obj)
+        private async void OnFolderPathSelection(object obj)
         {
             string selectedPath = _dialogs.PickFolder(
                 LocalizationManager.Get("dialog_pick_install"),
                 Environment.GetEnvironmentVariable("LOCALAPPDATA"));
-            if (selectedPath == null)
+            if (selectedPath != null)
+            {
+                await UseInstallPathAsync(selectedPath);
+            }
+        }
+
+        private bool _isResolvingInstall;
+
+        /// <summary>
+        /// Picks the install from a folder or from the Wand executable inside one. Ignored while a run or
+        /// another pick is active: the install must not change under them.
+        /// </summary>
+        public Task UseInstallPathAsync(string path) =>
+            PickInstallAsync(
+                () => WeModInstalls.ResolveInstall(File.Exists(path) ? Path.GetDirectoryName(path) : path),
+                () => Log(LocalizationManager.Format("log_invalid_directory", Path.GetFileName(path)), ELogType.Error));
+
+        private async Task PickInstallAsync(Func<WeModConfig> resolve, Action onMissing)
+        {
+            if (IsBusy || _isResolvingInstall)
             {
                 return;
             }
 
-            var info = WeModInstalls.CheckWeModPath(selectedPath);
-            if (info == null)
+            _isResolvingInstall = true;
+            try
             {
-                Log(LocalizationManager.Format("log_invalid_directory", Path.GetFileName(selectedPath)), ELogType.Error);
-                return;
-            }
+                // Off the UI thread: a network share or a large folder must not freeze the window, or Explorer waiting on the drop.
+                var info = await Task.Run(resolve);
+                if (IsBusy)
+                {
+                    return;
+                }
 
-            UseInstall(info);
+                if (info == null)
+                {
+                    onMissing();
+                    return;
+                }
+
+                UseInstall(info);
+            }
+            finally
+            {
+                _isResolvingInstall = false;
+            }
         }
 
         // Runs off the UI thread due to heavy file IO.
@@ -128,12 +190,14 @@ namespace WandEnhancer.View.MainWindow
             {
                 try
                 {
-                    new Enhancer(WeModInfo, Log).Restore();
+                    OpenOperationLog("Restore");
+                    new Enhancer(WeModInfo, LogAndRecord).Restore();
                     return true;
                 }
                 catch (Exception e)
                 {
-                    Log(LocalizationManager.Format("log_restore_failed", e.Message), ELogType.Error);
+                    LogAndRecord(LocalizationManager.Format("log_restore_failed", e.Message), ELogType.Error);
+                    LauncherLog.Write(e.ToString(), ELogType.Error);
                     return false;
                 }
             });
@@ -160,22 +224,86 @@ namespace WandEnhancer.View.MainWindow
                 _shell.ClosePopup();
                 IsPatchEnabled = false;
                 IsBusy = true;
+
+                var settings = SettingsManager.LoadSettings() ?? new AppSettings();
+                settings.LastPatchConfig = config;
+                SettingsManager.SaveSettings(settings);
                 await Task.Run(() =>
                 {
                     try
                     {
-                        new Enhancer(WeModInfo, Log, config).Patch();
+                        OpenOperationLog($"Patch | patches {Program.DescribePatches(config)} | strategy {config.Strategy} | " +
+                                         $"auto-apply {config.AutoApplyAfterUpdate}");
+                        new Enhancer(WeModInfo, LogAndRecord, config).Patch();
                         AlreadyPatched = true;
                         CanRestore = true;
                     }
                     catch (Exception e)
                     {
-                        Log(LocalizationManager.Format("log_patch_failed", e.Message), ELogType.Error);
+                        LogAndRecord(LocalizationManager.Format("log_patch_failed", e.Message), ELogType.Error);
+                        LauncherLog.Write(e.ToString(), ELogType.Error);
                         IsPatchEnabled = true;
                     }
                 });
                 IsBusy = false;
-            }), LocalizationManager.Get("pv_popup_title"));
+            }, SettingsManager.LoadSettings()?.LastPatchConfig), LocalizationManager.Get("pv_popup_title"));
+        }
+
+        // The current install first, so a manually picked one is rescanned too; the default locations only when it is gone.
+        private async void OnRescanInstall(object param)
+        {
+            var current = WeModInfo;
+            await PickInstallAsync(
+                () => (current != null ? WeModInstalls.Rescan(LauncherDeployment.SquirrelRootOf(current), current) : null)
+                      ?? WeModInstalls.FindWeMod(),
+                () =>
+                {
+                    UseInstall(null);
+                    Log(LocalizationManager.Get("log_install_not_found"), ELogType.Error);
+                });
+        }
+
+        private void OnCopyDiagnostics(object param)
+        {
+            try
+            {
+                var builder = new StringBuilder();
+                builder.AppendLine($"WandEnhancer: {Constants.Version} (build {Constants.Build})");
+                builder.AppendLine($"OS: {Environment.OSVersion} | Runtime: {RuntimeInformation.FrameworkDescription}");
+                if (WeModInfo != null)
+                {
+                    var folderVersion = WeModInstalls.ParseFolderVersion(Path.GetFileName(WeModInfo.RootDirectory));
+                    builder.AppendLine($"Install: {WeModInfo.ExecutablePath}");
+                    builder.AppendLine($"Client version: {(folderVersion.Major > 0 ? folderVersion.ToString() : "unknown")}");
+                    builder.AppendLine($"Patched: {AlreadyPatched} | Backup present: {Enhancer.HasBackup(WeModInfo.RootDirectory)}");
+                }
+                else
+                {
+                    builder.AppendLine("Install: none found");
+                }
+
+                builder.AppendLine("--- session log ---");
+                builder.Append(BuildLogReport());
+                System.Windows.Clipboard.SetText(builder.ToString());
+                Log(LocalizationManager.Get("log_copied"), ELogType.Success);
+            }
+            catch (Exception e)
+            {
+                Log(LocalizationManager.Format("log_copy_failed", e.Message), ELogType.Error);
+            }
+        }
+
+        /// <summary>Starts a launcher.log section: a failed manual run must leave a file to attach to a bug report.</summary>
+        private void OpenOperationLog(string operation)
+        {
+            LauncherLog.Open(LauncherDeployment.SquirrelRootOf(WeModInfo),
+                $"WandEnhancer {Constants.Version} build {Constants.Build} | {operation} | {WeModInfo.ExecutablePath}");
+        }
+
+        private void LogAndRecord(string message, ELogType logType)
+        {
+            Log(message, logType);
+            LauncherLog.Write(message, logType);
         }
 
         private void Log(string message, ELogType logType)
@@ -261,8 +389,14 @@ namespace WandEnhancer.View.MainWindow
             OpenSettingsCommand = new RelayCommand(OnOpenSettings);
             CopyLogsCommand = new RelayCommand(OnCopyLogs, HasLogs);
             ExportLogsCommand = new RelayCommand(OnExportLogs, HasLogs);
+            CopyDiagnosticsCommand = new RelayCommand(OnCopyDiagnostics);
+            RescanInstallCommand = new RelayCommand(OnRescanInstall);
 
-            UseInstall(WeModInstalls.FindWeMod());
+            var saved = SettingsManager.LoadSettings();
+            var resolved = !string.IsNullOrEmpty(saved?.LastInstallPath)
+                ? WeModInstalls.ResolveInstall(saved.LastInstallPath)
+                : null;
+            UseInstall(resolved ?? WeModInstalls.FindWeMod());
             if (WeModInfo == null)
             {
                 Log(LocalizationManager.Get("log_install_not_found"), ELogType.Error);

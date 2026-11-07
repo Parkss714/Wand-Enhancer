@@ -56,7 +56,8 @@ namespace WandEnhancer.Core.Services
                 StartDetached(watcherPath, squirrelRoot);
                 log?.Invoke("[ENHANCER] Update watcher installed and running in the background.", ELogType.Info);
             }
-            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException || e is SecurityException)
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException || e is SecurityException ||
+                                      e is System.ComponentModel.Win32Exception)
             {
                 log?.Invoke($"[ENHANCER] Could not set up the background update watcher: {e.Message}", ELogType.Warn);
             }
@@ -69,10 +70,31 @@ namespace WandEnhancer.Core.Services
                 string squirrelRoot = LauncherDeployment.SquirrelRootOf(install);
                 UnregisterRunKey(install);
                 UpdateWatcherService.Stop(squirrelRoot);
+                RemoveDeployed(squirrelRoot);
             }
             catch (Exception)
             {
                 // Best-effort: nothing left to clean up if the registry/root can't be reached.
+            }
+        }
+
+        /// <summary>Never throws: a watcher still shutting down (or a scanner) keeps its exe locked, which must not fail a Restore.</summary>
+        public static void RemoveDeployed(string squirrelRoot, Action<string, ELogType> log = null)
+        {
+            string watcherPath = Path.Combine(squirrelRoot, WatcherFileName);
+            if (!File.Exists(watcherPath) ||
+                string.Equals(OwnImagePath, watcherPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            try
+            {
+                File.Delete(watcherPath);
+            }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
+            {
+                log?.Invoke($"[ENHANCER] Could not remove {WatcherFileName}: {e.Message}", ELogType.Warn);
             }
         }
 

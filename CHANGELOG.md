@@ -3,6 +3,44 @@
 This file is the source of truth for release notes.
 The newest entry must match the version in `WandEnhancer/Properties/AssemblyInfo.cs`.
 
+## [2.2.1.0] - 2026-11-04
+
+### Features
+
+- The patch dialog now remembers your last choices (patches, method, auto-apply, custom scripts), and the main window remembers the Wand install. By @w0wzahh in #387.
+- A Re-detect button next to the install path rescans the current install after a Wand update, without restarting the app. By @w0wzahh in #387.
+- A Copy diagnostics button next to the log copies the enhancer version, OS, install path, Wand version and patch state, ready to paste into a bug report. By @w0wzahh in #387.
+
+### Fixes
+
+- Fixed the patcher targeting an old Wand version after an update. The latest install was chosen by the folder's modification time, which a virus scan or the enhancer's own backup can bump on the previous version. It is now chosen by the version in the folder name. By @w0wzahh in #383. #374
+- Restore now removes the deployed `WandEnhancerWatcher.exe`, and a file that is still locked is skipped with a warning instead of failing the Restore. By @w0wzahh in #386.
+- The log now warns when a newer Wand version sits next to the selected one. By @w0wzahh in #386. #374
+- Fixed the web tests failing on a source ZIP download, which stopped the build at "Test web-panel". #384
+
+## [2.2.0.0] - 2026-11-01
+
+### Features
+
+- Drag the Wand folder or `Wand.exe` onto the window to pick the install when it is not detected.
+- Bengali (Bangladesh) language by @amiMohammad in #305.
+- The remote panel gives a short haptic tap on toggles, action buttons and steppers. It works in Android browsers only, iOS Safari has no Vibration API.
+
+### Fixes
+
+- Fixed Patch and Restore failing on files still locked by Wand helpers. Helpers such as Squirrel's `Update.exe`, crashpad and the deployed watcher are now closed by executable path, file operations retry while a lock clears, and a lock that stays names the process holding it. By @w0wzahh in #359. #181 #326
+- Fixed the build failing when the checkout path contains `&`. By @w0wzahh in #359.
+- Fixed a failed restore of the original files leaving `app.asar.unpacked` half empty and Wand unable to start. That step is now rolled back with the rest of the patch.
+- Fixed sharing violations while neutralizing the integrity check: the auxiliary service is now closed before Patch and Restore. Also fixed the missing `netstandard` reference in the build. By @LastRq in #301.
+- A patch now fails and rolls back if the auxiliary service disappears while patching.
+- Auto-apply now waits for Squirrel's updater to exit before patching the new version.
+- The update watcher is restarted when a Patch fails, instead of staying stopped.
+
+### Improvements
+
+- Restore keeps `launcher.log` and `launcher.prev.log`, and manual Patch and Restore write to `launcher.log` too, so one file holds the whole story.
+- The README and the bug report template now say which logs to attach and list the usual causes: an unpatched Wand update and antivirus quarantine.
+
 ## [2.1.1.0] - 2026-10-18
 
 ### Fixes
@@ -136,7 +174,7 @@ The newest entry must match the version in `WandEnhancer/Properties/AssemblyInfo
 
 ### Important
 
-- Official releases no longer include downloadable `.exe` files. To update, sync your fork and rerun the `Build executable` workflow, or follow the instructions in [How to use](https://github.com/k1tbyte/Wand-Enhancer#-how-to-use).
+- Official releases no longer include downloadable `.exe` files. To update, sync your fork and rerun the `Build executable` workflow, or follow the instructions in [How to use](https://github.com/k1tbyte/Wand-Enhancer#how-to-use).
 
 ### Changed
 

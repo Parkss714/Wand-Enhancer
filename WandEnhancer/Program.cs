@@ -85,7 +85,7 @@ namespace WandEnhancer
             if (args.Length > 0 &&
                 args[0].StartsWith("--squirrel", StringComparison.OrdinalIgnoreCase))
             {
-                string updateExe = Path.Combine(myDir, "Update.exe");
+                string updateExe = Path.Combine(myDir, Constants.SquirrelUpdaterFileName);
                 if (File.Exists(updateExe))
                 {
                     LauncherLog.Write($"Squirrel hook {args[0]} forwarded to Update.exe.", ELogType.Info);
@@ -176,7 +176,7 @@ namespace WandEnhancer
         /// <summary>
         /// Describes applied patches for diagnostic logs. Unrecorded if auto-patch is off.
         /// </summary>
-        private static string DescribePatches(PatchConfig patchConfig)
+        internal static string DescribePatches(PatchConfig patchConfig)
         {
             if (patchConfig?.PatchTypes == null)
                 return "unrecorded";
